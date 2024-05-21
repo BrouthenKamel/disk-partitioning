@@ -45,6 +45,112 @@ struct {
     unsigned char part2[476];
 } boot_sector;
 
+
+//** --------------------------------------------------------------------- **//
+//** ----------------------- UTILS --------------------------------------- **/
+//** --------------------------------------------------------------------- **/
+
+//Funcion to read Sector
+
+unsigned char * read_sector(char * input_disk, int num_sect) {
+    char path[20] = "/dev/";
+    unsigned char * buffer = malloc(sizeof(unsigned char) * 512);
+    strcat(path, input_disk);
+    printf("%s\n", path);
+    int sect = 512 * num_sect;
+    FILE * disk = fopen(path, "rb");
+    if (disk == NULL) {
+        printf("Can't open the disk \n");
+    }
+    int p = fseek(disk, sect, SEEK_SET);
+    int n = fread(buffer, 512, 1, disk);
+    if (n <= 0) {
+        printf("Error in fread \n");
+    } else {
+        printf("\n Sector: %d Number of elements read: %d \n", num_sect, n);
+    }
+    return buffer;
+}
+
+
+void display_sector(char *disque_name, int num_sect){
+	unsigned char *buffer;
+    	buffer = read_sector(disque_name,num_sect);
+        printf("\n Address Content (octet de 1 a 16)\n");
+        for(int j=0; j<512; j++){
+            printf("%04d      ",j);
+            for(int i=j;i<j+16;i++)
+                printf("%02x ",buffer[i]);
+            printf("\n");
+            j+=15;
+        }
+        free(buffer);
+}
+
+unsigned char read_nth_oct_sec(char *disque_name, int num_oct, int num_sec) {
+    if (num_oct < 0 || num_oct >= 512) {
+        fprintf(stderr, "Error: Octet number out of range (0-511).\n");
+        exit(EXIT_FAILURE);
+    }
+
+    unsigned char *buffer = read_sector(disque_name, num_sec);
+    if (buffer == NULL) {
+        fprintf(stderr, "Error: Failed to read sector.\n");
+        exit(EXIT_FAILURE);
+    }
+
+    unsigned char nth_octet = buffer[num_oct];
+    free(buffer);
+    return nth_octet;
+}
+
+
+
+unsigned char *read_nth_oct_pos(char *disk_name, int num_oct, int num_sec, int num_bytes) {
+    // Open the disk file
+    char path[20] = "/dev/";
+    strcat(path, disk_name);
+    FILE *disk = fopen(path, "rb");
+    if (disk == NULL) {
+        printf("Can't open the disk\n");
+        exit(EXIT_FAILURE);
+    }
+
+    // Calculate the offset
+    int offset = num_sec * 512 + num_oct;
+
+    // Seek to the specified offset
+    if (fseek(disk, offset, SEEK_SET) != 0) {
+        printf("Error: fseek failed\n");
+        fclose(disk);
+        exit(EXIT_FAILURE);
+    }
+
+    // Allocate memory for the buffer
+    unsigned char *buffer = malloc(sizeof(unsigned char) * num_bytes);
+    if (buffer == NULL) {
+        printf("Memory allocation failed\n");
+        fclose(disk);
+        exit(EXIT_FAILURE);
+    }
+
+    // Read the specified number of bytes
+    size_t bytes_read = fread(buffer, sizeof(unsigned char), num_bytes, disk);
+    if (bytes_read != num_bytes) {
+        printf("Error: fread failed\n");
+        fclose(disk);
+        free(buffer);
+        exit(EXIT_FAILURE);
+    }
+
+    // Close the disk file and return the buffer
+    fclose(disk);
+    return buffer;
+}
+
+
+ //*  ---------------------------------------------------------------------------------- **/
+
 // Function to display the list of disks
 void list_disks() {
     struct dirent *de;
@@ -212,6 +318,9 @@ int main() {
 
     // Display partition information
     display_partition_info(disk);
+
+    // DIsplay from the octet: 
+    printf("%c", read_nth_oct_sec(disk, 4, 4));
 
     return 0;
 }
