@@ -4,6 +4,16 @@
 #include <dirent.h>
 #include <stdbool.h>
 #include <sys/stat.h>
+#include <stdint.h>
+
+uint16_t to_uint16(const unsigned char* bytes) {
+    return (uint16_t)bytes[0] | ((uint16_t)bytes[1] << 8);
+}
+
+uint16_t bytes_to_uint16(const unsigned char* bytes) {
+    return (uint16_t)bytes[0] | ((uint16_t)bytes[1] << 8) |
+           ((uint16_t)bytes[2] << 16) | ((uint16_t)bytes[3] << 24);
+}
 
 // Define the GPT header structure
 struct {
@@ -35,15 +45,27 @@ struct {
 struct {
     unsigned char part1[11];
     struct {
-        unsigned char part1[2];
+        unsigned char number_bytes_by_sector[2];
+        unsigned char number_sectors_by_cluster;
         unsigned char reserved_sector_count[2];
         unsigned char fat_count;
         unsigned char part2[5];
         unsigned char fat_sector_count[2];
         unsigned char part3[12];
     } bios;
-    unsigned char part2[476];
+    unsigned char fat_sector_count[4];
+    unsigned char part2[4];
+    unsigned char first_cluster[4];
+    unsigned char part3[468];
 } boot_sector;
+
+// Define a structure to hold file details
+struct {
+    unsigned char filename[8];
+    unsigned char extension[3];
+    unsigned char attributes[17];
+    unsigned char length[4];
+} directory_entry;
 
 // Function to display the list of disks
 void list_disks() {
@@ -116,16 +138,68 @@ void display_disk_info(char *disk_name) {
     printf("\n***** LBA end address of the data area: %d\n", data_end_address);
 }
 
-// Function to calculate the LBA address of the root cluster
-void calculate_cluster_address(int address, FILE *disk) {
-    printf("\n\n**** LBA addresses ****\n");
 
+// Function to read a sector
+unsigned char * read_sector(char * input_disk, int num_sect) {
+    char path[20] = "/dev/";
+    unsigned char * buffer = malloc(sizeof(unsigned char) * 512);
+    strcat(path, input_disk);
+    printf("%s\n", path);
+    int sect = 512 * num_sect;
+    FILE * disk = fopen(path, "rb");
+    if (disk == NULL) {
+        printf("Can't open the disk \n");
+    }
+    int p = fseek(disk, sect, SEEK_SET);
+    int n = fread(buffer, 512, 1, disk);
+    if (n <= 0) {
+        printf("Error in fread \n");
+    } else {
+        printf("\n Sector: %d Number of elements read: %d \n", num_sect, n);
+    }
+    return buffer;
+}
+
+// Function to display a sector
+void display_sector(char *disque_name, int num_sect){
+    unsigned char *buffer;
+        buffer = read_sector(disque_name,num_sect);
+        printf("\n Address Content (octet de 1 a 16)\n");
+        for(int j=0; j<512; j++){
+            printf("%04d      ",j);
+            for(int i=j;i<j+16;i++)
+                printf("%02x ",buffer[i]);
+            printf("\n");
+            j+=15;
+        }
+        free(buffer);
+}
+
+// Function to read the nth octet of a sector
+unsigned char read_nth_oct_of_sector(char *disque_name, int num_oct, int num_sec) {
+    if (num_oct < 0 || num_oct >= 512) {
+        fprintf(stderr, "Error: Octet number out of range (0-511).\n");
+        exit(EXIT_FAILURE);
+    }
+
+    unsigned char *buffer = read_sector(disque_name, num_sec);
+    if (buffer == NULL) {
+        fprintf(stderr, "Error: Failed to read sector.\n");
+        exit(EXIT_FAILURE);
+    }
+
+    unsigned char nth_octet = buffer[num_oct];
+    free(buffer);
+    return nth_octet;
+}
+
+// Function to calculate the LBA address of the root cluster
+int calculate_cluster_address(int address, FILE *disk) {
     if (disk == NULL) {
         printf("\nERROR: Unable to open disk\n");
         exit(0);
     }
 
-    printf("\n**** LBA address of the root cluster: %d\n", address);
     int address_offset = 512 * address;
 
     int err = fseek(disk, address_offset, SEEK_SET);
@@ -140,12 +214,70 @@ void calculate_cluster_address(int address, FILE *disk) {
         exit(0);
     }
 
-    int reserved_sector_count = *(int *) &(boot_sector.bios.reserved_sector_count);
-    int fat_count = *(int *) &(boot_sector.bios.fat_count);
-    int fat_sector_count = *(int *) &(boot_sector.bios.fat_sector_count);
+    int reserved_sector_count = to_uint16(boot_sector.bios.reserved_sector_count);
+    printf("- Reserved sector count: %d\n", reserved_sector_count);
+    int fat_count = boot_sector.bios.fat_count;
+    printf("- FAT count: %d\n", fat_count);
+    int fat_sector_count = to_uint16(boot_sector.fat_sector_count);
+    printf("- FAT sector count: %d\n", fat_sector_count);
 
     int cluster_address = address + reserved_sector_count + (fat_count * fat_sector_count);
     printf("\n**** LBA address of the first cluster: %d\n", cluster_address);
+    return cluster_address;
+}
+
+// Fonction to calculate first cluster number
+int calculate_cluster_number(int address, FILE *disk) {
+    printf("\n\n**** LBA addresses ****\n");
+
+    if (disk == NULL) {
+        printf("\nERROR: Unable to open disk\n");
+        exit(0);
+    }
+
+    int address_offset = 512 * address;
+
+    int err = fseek(disk, address_offset, SEEK_SET);
+    if (err != 0) {
+        printf("\nERROR: Failed to seek on the disk\n");
+        exit(0);
+    }
+
+    int num_read = fread(&boot_sector, 512, 1, disk);
+    if (num_read <= 0) {
+        printf("\nERROR reading boot sector\n");
+        exit(0);
+    }
+
+    int cluster_number = *(int *) &(boot_sector.first_cluster);
+    printf("\n**** First Cluster number: %d\n", cluster_number);
+    return cluster_number;
+}
+
+// Function to calculate first cluster size
+int calculate_cluster_size(int address, FILE *disk) {
+    if (disk == NULL) {
+        printf("\nERROR: Unable to open disk\n");
+        exit(0);
+    }
+
+    int address_offset = 512 * address;
+
+    int err = fseek(disk, address_offset, SEEK_SET);
+    if (err != 0) {
+        printf("\nERROR: Failed to seek on the disk\n");
+        exit(0);
+    }
+
+    int num_read = fread(&boot_sector, 512, 1, disk);
+    if (num_read <= 0) {
+        printf("\nERROR reading boot sector\n");
+        exit(0);
+    }
+
+    int cluster_size = to_uint16(boot_sector.bios.number_bytes_by_sector) * boot_sector.bios.number_sectors_by_cluster;
+    printf("\n**** Cluster size: %d\n", cluster_size);
+    return cluster_size;
 }
 
 // Function to display partition information
@@ -195,7 +327,58 @@ void display_partition_info(char *disk_name) {
     calculate_cluster_address(*(int *) &(partition_table.partition_entries[1].start_lba), disk);
 }
 
-// Main function
+// Function to display FAT32 partition information
+void display_fat32_partition_info(char *disk_name) {
+    FILE* disk;
+    char path[255] = "";
+    int num_read;
+    
+    strcat(path, "/dev/");
+    strcat(path, disk_name);
+
+    disk = fopen(path, "rb");
+    if (disk == NULL) {
+        printf("\nERROR: Unable to open disk\n");
+        exit(0);
+    }
+
+    int err = fseek(disk, 512 * 2, SEEK_SET);
+    if (err != 0) {
+        printf("\nERROR: Failed to seek on the disk\n");
+        exit(0);
+    }
+
+    num_read = fread(&partition_table, 512, 1, disk);
+    if (num_read <= 0) {
+        printf("\nERROR reading partition table\n");
+        exit(0);
+    }
+
+    printf("\n**** Partition Table ****\n");
+    printf("\n|-----------|----------------|----------------|----------------|---------------|");
+    printf("\n| Partition |   LBA_START    |    LBA_END     | Sector Count   | Size in GB    |");
+    printf("\n|-----------|----------------|----------------|----------------|---------------|");
+
+    int gigabyte = 1024 * 1024 * 1024;
+    int start_lba = *(int *) &(partition_table.partition_entries[1].start_lba);
+    int end_lba = *(int *) &(partition_table.partition_entries[1].end_lba);
+    int sector_count = end_lba - start_lba;
+    double size_in_bytes = (double) sector_count * 512;
+    double size_in_gb = size_in_bytes / gigabyte;
+
+    printf("\n|sdb%d       |  %8d      |    %8d    |  %10d    |%10.3f     |", 1, start_lba, end_lba, sector_count, size_in_gb);
+    printf("\n|-----------|----------------|----------------|----------------|---------------|");
+
+    // First cluster number
+    int cluster_number = calculate_cluster_number(*(int *) &(partition_table.partition_entries[1].start_lba), disk);
+
+    // First cluster address
+    int cluster_adress = calculate_cluster_address(*(int *) &(partition_table.partition_entries[1].start_lba), disk);
+
+    // Cluster size
+    int clusrer_size = calculate_cluster_size(*(int *) &(partition_table.partition_entries[1].start_lba), disk);
+}
+
 int main() {
     // Display the list of disks
     printf("--------- List of Disks ---------\n");
@@ -207,11 +390,8 @@ int main() {
     printf("=> Enter the physical disk name: ");
     scanf("%9s", disk);
 
-    // Display disk information
-    display_disk_info(disk);
-
-    // Display partition information
-    display_partition_info(disk);
+    printf("FAT32 Partition infos");
+    display_fat32_partition_info(disk);
 
     return 0;
 }
